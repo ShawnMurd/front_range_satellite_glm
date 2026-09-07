@@ -70,10 +70,10 @@ PRODUCT = "GLM-L2-LCFA"  # Lightning Cluster-Filter Algorithm (events/groups/fla
 # Colorado Front Range corridor (roughly Trinidad -> Fort Collins, foothills
 # to just east of I-25). Adjust with --lat-min/--lat-max/--lon-min/--lon-max.
 FRONT_RANGE = {
-    "lat_min": 37.0,
+    "lat_min": 38.6,
     "lat_max": 41.0,
-    "lon_min": -106.0,
-    "lon_max": -104.0,
+    "lon_min": -106.3,
+    "lon_max": -104.7,
 }
 
 GB = 1e9  # bytes per "GB" for the download cap
