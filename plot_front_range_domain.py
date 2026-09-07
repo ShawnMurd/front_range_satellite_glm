@@ -43,7 +43,8 @@ PAD = 1.0
 
 
 def build_map(ax, bbox: dict) -> None:
-    """Draw base map + rivers, counties, states on a PlateCarree axes."""
+    """Draw base map + rivers, counties, states. Data stays in PlateCarree;
+    the axes projection (set by the caller) may differ."""
     ax.set_extent(
         [
             bbox["lon_min"] - PAD,
@@ -91,10 +92,10 @@ def build_map(ax, bbox: dict) -> None:
                    linewidth=1.1, zorder=4)
 
     # Gridlines with lat/lon labels
-    gl = ax.gridlines(draw_labels=True, linewidth=0.3, color="#888888",
-                      linestyle="--", zorder=5)
-    gl.top_labels = False
-    gl.right_labels = False
+    #gl = ax.gridlines(draw_labels=True, linewidth=0.3, color="#888888",
+    #                  linestyle="--", zorder=5)
+    #gl.top_labels = False
+    #gl.right_labels = False
 
 
 def draw_domain_box(ax, bbox: dict) -> None:
@@ -163,7 +164,13 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     bbox = FRONT_RANGE
 
-    proj = ccrs.PlateCarree()
+    central_lon = (bbox["lon_min"] + bbox["lon_max"]) / 2
+    central_lat = (bbox["lat_min"] + bbox["lat_max"]) / 2
+    proj = ccrs.LambertConformal(
+        central_longitude=central_lon,
+        central_latitude=central_lat,
+        standard_parallels=(bbox["lat_min"], bbox["lat_max"]),
+    )
     fig, ax = plt.subplots(
         figsize=(8, 8), subplot_kw={"projection": proj}
     )
