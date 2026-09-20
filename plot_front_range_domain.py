@@ -154,6 +154,8 @@ def parse_args(argv=None):
     )
     p.add_argument("--out", default="front_range_domain.png",
                    help="Output image file (PNG/PDF/etc. by extension)")
+    p.add_argument("--no_save", action="store_true",
+                   help="Save the output image to the specified file")
     p.add_argument("--dpi", type=int, default=200, help="Output image DPI")
     p.add_argument("--no-show", action="store_true",
                    help="Do not open an interactive plot window")
@@ -185,8 +187,9 @@ def main(argv=None) -> int:
         fontsize=12,
     )
 
-    fig.savefig(args.out, dpi=args.dpi, bbox_inches="tight")
-    print(f"Saved: {args.out}")
+    if not args.no_save:
+        fig.savefig(args.out, dpi=args.dpi, bbox_inches="tight")
+        print(f"Saved: {args.out}")
 
     if not args.no_show:
         plt.show()
