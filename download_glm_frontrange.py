@@ -67,8 +67,7 @@ BUCKETS = {
 }
 PRODUCT = "GLM-L2-LCFA"  # Lightning Cluster-Filter Algorithm (events/groups/flashes)
 
-# Colorado Front Range corridor (roughly Trinidad -> Fort Collins, foothills
-# to just east of I-25). Adjust with --lat-min/--lat-max/--lon-min/--lon-max.
+# Colorado Front Range corridor
 FRONT_RANGE = {
     "lat_min": 38.6,
     "lat_max": 41.0,
@@ -205,10 +204,14 @@ def parse_args(argv=None):
                    help="Re-process subsets that already exist")
     p.add_argument("--dry-run", action="store_true",
                    help="Only report the total size of matching files; download nothing")
-    p.add_argument("--lat-min", type=float, default=FRONT_RANGE["lat_min"])
-    p.add_argument("--lat-max", type=float, default=FRONT_RANGE["lat_max"])
-    p.add_argument("--lon-min", type=float, default=FRONT_RANGE["lon_min"])
-    p.add_argument("--lon-max", type=float, default=FRONT_RANGE["lon_max"])
+
+    # Force user to change lat/lon coordinates of box in this script manually
+    # b/c FRONT_RANGE from this script is used by other scripts
+    #p.add_argument("--lat-min", type=float, default=FRONT_RANGE["lat_min"])
+    #p.add_argument("--lat-max", type=float, default=FRONT_RANGE["lat_max"])
+    #p.add_argument("--lon-min", type=float, default=FRONT_RANGE["lon_min"])
+    #p.add_argument("--lon-max", type=float, default=FRONT_RANGE["lon_max"])
+
     return p.parse_args(argv)
 
 
@@ -220,10 +223,7 @@ def main(argv=None) -> int:
     start = dt.date.fromisoformat(args.start)
     end = dt.date.fromisoformat(args.end)
     hours = parse_hours(args.hours)
-    bbox = {
-        "lat_min": args.lat_min, "lat_max": args.lat_max,
-        "lon_min": args.lon_min, "lon_max": args.lon_max,
-    }
+    bbox = FRONT_RANGE
     bucket = BUCKETS[args.satellite]
     outdir = Path(args.outdir)
     cap_bytes = args.max_gb * GB
