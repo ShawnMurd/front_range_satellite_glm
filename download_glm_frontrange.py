@@ -72,8 +72,8 @@ PRODUCT = "GLM-L2-LCFA"  # Lightning Cluster-Filter Algorithm (events/groups/fla
 FRONT_RANGE = {
     "lat_min": 38.6,
     "lat_max": 41.0,
-    "lon_min": -106.3,
-    "lon_max": -104.7,
+    "lon_min": -106.13,
+    "lon_max": -104.8,
 }
 
 GB = 1e9  # bytes per "GB" for the download cap

@@ -4,12 +4,18 @@ plot_front_range_domain.py
 ==========================
 
 Plot the FRONT_RANGE bounding box defined in ``download_glm_frontrange.py``
-on a Cartopy map with rivers, county borders, and state borders.
+on a Cartopy map with underlying topography, rivers, county borders, and
+state borders.
 
 The map uses Natural Earth features:
     * rivers        - 10m physical 'rivers_lake_centerlines'
     * county borders - 10m cultural 'admin_2_counties'
     * state borders - 10m cultural 'admin_1_states_provinces_lines'
+
+Topography is real elevation data (not a road/label map) from NOAA's ETOPO
+2022 global relief model, fetched via OPeNDAP for just the plotted bbox and
+rendered with matplotlib's 'terrain' colormap. Use --no-topo to fall back to
+a flat land/ocean background if the remote dataset is unavailable.
 
 Natural Earth shapefiles are downloaded automatically by Cartopy on first
 use (internet required once; they are cached afterwards).
@@ -22,8 +28,8 @@ python plot_front_range_domain.py
 # Save to a specific file, no interactive window
 python plot_front_range_domain.py --out front_range_domain.png --no-show
 
-Requires: cartopy, matplotlib
-    conda install -c conda-forge cartopy matplotlib
+Requires: cartopy, matplotlib, numpy, xarray, netCDF4
+    conda install -c conda-forge cartopy matplotlib numpy xarray netcdf4
 """
 
 from __future__ import annotations
@@ -33,6 +39,9 @@ import argparse
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 import matplotlib.pyplot as plt
+import numpy as np
+import xarray as xr
+from matplotlib.colors import Normalize
 from matplotlib.patches import Rectangle
 
 from download_glm_frontrange import FRONT_RANGE
@@ -41,10 +50,28 @@ from download_glm_frontrange import FRONT_RANGE
 # map edges.
 PAD = 1.0
 
+# NOAA ETOPO 2022 global relief model (60 arc-second), served via OPeNDAP.
+# No login required; only the requested bbox is transferred.
+ETOPO_URL = (
+    "https://www.ngdc.noaa.gov/thredds/dodsC/global/ETOPO2022/60s/"
+    "60s_surface_elev_netcdf/ETOPO_2022_v1_60s_N90W180_surface.nc"
+)
 
-def build_map(ax, bbox: dict) -> None:
-    """Draw base map + rivers, counties, states. Data stays in PlateCarree;
-    the axes projection (set by the caller) may differ."""
+
+def fetch_elevation(bbox: dict, pad: float = PAD):
+    """Return (lon, lat, elev_m) 1D/1D/2D arrays of ETOPO 2022 elevation
+    covering the padded bbox. Raises on network/dataset failure."""
+    ds = xr.open_dataset(ETOPO_URL, engine="netcdf4")
+    sub = ds["z"].sel(
+        lat=slice(bbox["lat_min"] - pad, bbox["lat_max"] + pad),
+        lon=slice(bbox["lon_min"] - pad, bbox["lon_max"] + pad),
+    ).load()
+    return sub["lon"].values, sub["lat"].values, sub.values
+
+
+def build_map(ax, bbox: dict, topo: bool = True) -> None:
+    """Draw base map + topography, rivers, counties, states. Data stays in
+    PlateCarree; the axes projection (set by the caller) may differ."""
     ax.set_extent(
         [
             bbox["lon_min"] - PAD,
@@ -55,9 +82,28 @@ def build_map(ax, bbox: dict) -> None:
         crs=ccrs.PlateCarree(),
     )
 
-    # Subtle land/ocean/lake background
-    ax.add_feature(cfeature.LAND.with_scale("10m"), facecolor="#f5f2e8", zorder=0)
-    ax.add_feature(cfeature.OCEAN.with_scale("10m"), facecolor="#dcecf5", zorder=0)
+    mesh = None
+    if topo:
+        try:
+            lon, lat, elev = fetch_elevation(bbox)
+            # Reserve the colormap's blue segment for below-sea-level only.
+            vmin = min(0.0, float(np.nanmin(elev)))
+            vmax = float(np.nanmax(elev))
+            mesh = ax.pcolormesh(
+                lon, lat, elev,
+                transform=ccrs.PlateCarree(),
+                cmap="terrain", norm=Normalize(vmin=vmin, vmax=vmax),
+                shading="nearest", zorder=0,
+            )
+        except Exception as exc:  # network/dataset unavailable
+            print(f"Topography unavailable, using flat background ({exc})")
+            topo = False
+
+    if not topo:
+        # Subtle land/ocean background
+        ax.add_feature(cfeature.LAND.with_scale("10m"), facecolor="#f5f2e8", zorder=0)
+        ax.add_feature(cfeature.OCEAN.with_scale("10m"), facecolor="#dcecf5", zorder=0)
+
     ax.add_feature(cfeature.LAKES.with_scale("10m"), facecolor="#dcecf5",
                    edgecolor="#7fa8c9", linewidth=0.4, zorder=1)
 
@@ -97,54 +143,68 @@ def build_map(ax, bbox: dict) -> None:
     #gl.top_labels = False
     #gl.right_labels = False
 
+    return mesh
+
 
 def draw_domain_box(ax, bbox: dict) -> None:
     """Overlay the FRONT_RANGE bounding box and annotate its corners."""
     width = bbox["lon_max"] - bbox["lon_min"]
     height = bbox["lat_max"] - bbox["lat_min"]
 
-    rect = Rectangle(
-        (bbox["lon_min"], bbox["lat_min"]),
-        width,
-        height,
-        transform=ccrs.PlateCarree(),
-        facecolor="red",
-        alpha=0.12,
-        edgecolor="red",
-        linewidth=2.0,
-        zorder=6,
-    )
-    ax.add_patch(rect)
+    # Shaded box containing the FRONT_RANGE domain (commented out)
+    #rect = Rectangle(
+    #    (bbox["lon_min"], bbox["lat_min"]),
+    #    width,
+    #    height,
+    #    transform=ccrs.PlateCarree(),
+    #    facecolor="red",
+    #    alpha=0.2,
+    #    linewidth=0,
+    #    zorder=6,
+    #)
+    #ax.add_patch(rect)
+
+    rect2 = Rectangle(
+            (bbox["lon_min"], bbox["lat_min"]),
+            width,
+            height,
+            transform=ccrs.PlateCarree(),
+            facecolor="none",
+            edgecolor="red",
+            linewidth=3.0,
+            zorder=6,
+        )
+    ax.add_patch(rect2)
 
     # Label the box
-    ax.text(
-        bbox["lon_min"] + width / 2,
-        bbox["lat_max"] + 0.08,
-        "FRONT_RANGE",
-        transform=ccrs.PlateCarree(),
-        ha="center",
-        va="bottom",
-        fontsize=11,
-        fontweight="bold",
-        color="red",
-        zorder=7,
-    )
+    #ax.text(
+    #    bbox["lon_min"] + width / 2,
+    #    bbox["lat_max"] + 0.08,
+    #    "FRONT_RANGE",
+    #    transform=ccrs.PlateCarree(),
+    #    ha="center",
+    #    va="bottom",
+    #    fontsize=11,
+    #    fontweight="bold",
+    #    color="red",
+    #    zorder=7,
+    #)
 
     # Corner coordinate annotations
-    corners = [
-        (bbox["lon_min"], bbox["lat_max"], "right", "bottom"),
-        (bbox["lon_max"], bbox["lat_max"], "left", "bottom"),
-        (bbox["lon_min"], bbox["lat_min"], "right", "top"),
-        (bbox["lon_max"], bbox["lat_min"], "left", "top"),
-    ]
-    for lon, lat, ha, va in corners:
-        ax.plot(lon, lat, marker="o", markersize=4, color="red",
-                transform=ccrs.PlateCarree(), zorder=7)
-        ax.text(
-            lon, lat, f" {lat:.1f}, {lon:.1f} ",
-            transform=ccrs.PlateCarree(),
-            ha=ha, va=va, fontsize=7, color="red", zorder=7,
-        )
+    #corners = [
+    #    (bbox["lon_min"], bbox["lat_max"], "right", "bottom"),
+    #    (bbox["lon_max"], bbox["lat_max"], "left", "bottom"),
+    #    (bbox["lon_min"], bbox["lat_min"], "right", "top"),
+    #    (bbox["lon_max"], bbox["lat_min"], "left", "top"),
+    #]
+    #for lon, lat, ha, va in corners:
+    #    ax.plot(lon, lat, marker="o", markersize=4, color="red",
+    #            transform=ccrs.PlateCarree(), zorder=7)
+    #    ax.text(
+    #        lon, lat, f" {lat:.1f}, {lon:.1f} ",
+    #        transform=ccrs.PlateCarree(),
+    #        ha=ha, va=va, fontsize=7, color="red", zorder=7,
+    #    )
 
 
 def parse_args(argv=None):
@@ -159,6 +219,8 @@ def parse_args(argv=None):
     p.add_argument("--dpi", type=int, default=200, help="Output image DPI")
     p.add_argument("--no-show", action="store_true",
                    help="Do not open an interactive plot window")
+    p.add_argument("--no-topo", action="store_true",
+                   help="Skip ETOPO elevation data (flat land/ocean background)")
     return p.parse_args(argv)
 
 
@@ -177,13 +239,17 @@ def main(argv=None) -> int:
         figsize=(8, 8), subplot_kw={"projection": proj}
     )
 
-    build_map(ax, bbox)
+    mesh = build_map(ax, bbox, topo=not args.no_topo)
     draw_domain_box(ax, bbox)
+
+    if mesh is not None:
+        fig.colorbar(mesh, ax=ax, orientation="vertical", shrink=0.7,
+                     pad=0.05, label="Elevation (m)")
 
     ax.set_title(
         "GLM Front Range Domain\n"
-        f"lat {bbox['lat_min']:.1f}..{bbox['lat_max']:.1f}, "
-        f"lon {bbox['lon_min']:.1f}..{bbox['lon_max']:.1f}",
+        f"lat {bbox['lat_min']:.2f}..{bbox['lat_max']:.2f}, "
+        f"lon {bbox['lon_min']:.2f}..{bbox['lon_max']:.2f}",
         fontsize=12,
     )
 
