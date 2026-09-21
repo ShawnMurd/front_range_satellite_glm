@@ -188,18 +188,22 @@ def combine_day(outdir: Path, year: int, doy: int) -> Path | None:
     if not files:
         return None
 
-    datasets = [xr.open_dataset(f, engine="netcdf4", decode_times=False) for f in files]
-    try:
-        # minimal/override: only variables that already vary along
-        # number_of_flashes get concatenated; scalar metadata (which may
-        # differ slightly file-to-file) is taken from the first file.
-        combined = xr.concat(
-            datasets, dim="number_of_flashes",
-            data_vars="minimal", coords="minimal", compat="override",
-        )
-    finally:
-        for d in datasets:
-            d.close()
+    # .load() pulls all data into memory and closes the underlying file
+    # handle immediately; without it, xarray's lazy file manager can
+    # silently reopen the source file during concat/to_netcdf, leaving a
+    # handle open on Windows that blocks the unlink() below.
+    datasets = []
+    for f in files:
+        with xr.open_dataset(f, engine="netcdf4", decode_times=False) as d:
+            datasets.append(d.load())
+
+    # minimal/override: only variables that already vary along
+    # number_of_flashes get concatenated; scalar metadata (which may
+    # differ slightly file-to-file) is taken from the first file.
+    combined = xr.concat(
+        datasets, dim="number_of_flashes",
+        data_vars="minimal", coords="minimal", compat="override",
+    )
 
     for name in combined.variables:
         var = combined[name]
