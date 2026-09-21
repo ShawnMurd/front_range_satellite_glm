@@ -11,14 +11,17 @@ How it works
 ------------
 1. Lists GLM-L2-LCFA files on S3 for the requested date/hour window.
 2. Downloads files one at a time (stops before exceeding ``--max-gb``).
-3. Subsets each file to the Front Range bounding box, keeping the
-   flash -> group -> event hierarchy consistent:
-     * flashes whose centroid falls inside the box are kept;
-     * all groups belonging to those flashes are kept;
-     * all events belonging to those groups are kept.
+3. Subsets each file to flash-level data over the Front Range bounding box:
+     * group and event data are dropped entirely (flash-level only);
+     * only flashes with ``flash_quality_flag == 0`` whose centroid falls
+       inside the box are kept.
 4. Writes the subset as a compressed netCDF file and deletes the raw file
-   (unless ``--keep-raw``), so the retained dataset is typically only
-   ~2-5% of the downloaded volume.
+   (unless ``--keep-raw``), so the retained dataset is typically only a
+   small fraction of the downloaded volume.
+5. At the end of each day (once all its hourly subsets are written), the
+   day's subset files are combined into a single ``<outdir>/YYYY/DDD.nc``
+   file and the individual hourly files (and now-empty directories) are
+   deleted.
 
 Examples
 --------
@@ -108,40 +111,38 @@ def list_objects(client, bucket: str, prefix: str):
 # Subsetting
 # ---------------------------------------------------------------------------
 def subset_to_bbox(src_path: str, dst_path: Path, bbox: dict) -> bool:
-    """Subset one GLM LCFA file to the bounding box.
+    """Subset one GLM LCFA file to flash-level data over the bounding box.
+
+    Group and event data are dropped entirely (flash-level only). Only
+    flashes with ``flash_quality_flag == 0`` whose centroid falls inside
+    the box are kept.
 
     Returns True if any flashes were kept (subset written to ``dst_path``),
-    False if the file contains no lightning inside the box.
+    False if the file contains no qualifying lightning inside the box.
     """
     # decode_times=False keeps original packed integer encodings intact,
     # which makes the re-write faithful and compact.
     with xr.open_dataset(src_path, engine="netcdf4", decode_times=False) as ds:
+        # Drop all group/event variables; keep flash-level + scalar/metadata ones.
+        keep_vars = [
+            name for name, var in ds.variables.items()
+            if "number_of_groups" not in var.dims and "number_of_events" not in var.dims
+        ]
+        ds = ds[keep_vars]
+
         in_box = (
             (ds.flash_lat >= bbox["lat_min"])
             & (ds.flash_lat <= bbox["lat_max"])
             & (ds.flash_lon >= bbox["lon_min"])
             & (ds.flash_lon <= bbox["lon_max"])
         )
+        good_quality = ds.flash_quality_flag == 0
 
-        # 1. flashes whose centroid is inside the box
-        f_idx = np.flatnonzero(in_box.values)
+        f_idx = np.flatnonzero((in_box & good_quality).values)
         if f_idx.size == 0:
             return False
-        flash_ids = ds.flash_id.values[f_idx]
 
-        # 2. all groups belonging to those flashes (keeps flashes whole,
-        #    even if a group sits just outside the box)
-        g_idx = np.flatnonzero(np.isin(ds.group_parent_flash_id.values, flash_ids))
-        group_ids = ds.group_id.values[g_idx]
-
-        # 3. all events belonging to those groups
-        e_idx = np.flatnonzero(np.isin(ds.event_parent_group_id.values, group_ids))
-
-        sub = ds.isel(
-            number_of_flashes=f_idx,
-            number_of_groups=g_idx,
-            number_of_events=e_idx,
-        )
+        sub = ds.isel(number_of_flashes=f_idx)
 
         # Avoid the classic "_FillValue present in both attrs and encoding"
         # netCDF write conflict.
@@ -159,7 +160,8 @@ def subset_to_bbox(src_path: str, dst_path: Path, bbox: dict) -> bool:
 
         sub.attrs["subset_note"] = (
             f"Subset to Front Range box: lat {bbox['lat_min']}..{bbox['lat_max']}, "
-            f"lon {bbox['lon_min']}..{bbox['lon_max']} (flash-centroid based)"
+            f"lon {bbox['lon_min']}..{bbox['lon_max']} (flash-centroid based, "
+            "flash_quality_flag == 0 only, group/event data dropped)"
         )
         sub.attrs["history"] = (
             f"{dt.datetime.utcnow():%Y-%m-%dT%H:%M:%SZ} subset by "
@@ -169,6 +171,72 @@ def subset_to_bbox(src_path: str, dst_path: Path, bbox: dict) -> bool:
         dst_path.parent.mkdir(parents=True, exist_ok=True)
         sub.to_netcdf(dst_path, engine="netcdf4", encoding=encoding)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Daily combination
+# ---------------------------------------------------------------------------
+def combine_day(outdir: Path, year: int, doy: int) -> Path | None:
+    """Combine all hourly subset files for one day into a single file.
+
+    The individual files (and now-empty hour/day directories) that were
+    combined are deleted afterwards. Returns the path to the combined file,
+    or None if there were no files to combine.
+    """
+    day_dir = outdir / f"{year}" / f"{doy:03d}"
+    files = sorted(day_dir.glob("*/*.nc"))
+    if not files:
+        return None
+
+    datasets = [xr.open_dataset(f, engine="netcdf4", decode_times=False) for f in files]
+    try:
+        # minimal/override: only variables that already vary along
+        # number_of_flashes get concatenated; scalar metadata (which may
+        # differ slightly file-to-file) is taken from the first file.
+        combined = xr.concat(
+            datasets, dim="number_of_flashes",
+            data_vars="minimal", coords="minimal", compat="override",
+        )
+    finally:
+        for d in datasets:
+            d.close()
+
+    for name in combined.variables:
+        var = combined[name]
+        if "_FillValue" in var.attrs and "_FillValue" in var.encoding:
+            del var.attrs["_FillValue"]
+
+    encoding = {
+        name: {"zlib": True, "complevel": 4}
+        for name, var in combined.data_vars.items()
+        if var.ndim > 0
+    }
+    combined.attrs["history"] = (
+        f"{dt.datetime.utcnow():%Y-%m-%dT%H:%M:%SZ} combined {len(files)} hourly "
+        "subsets by download_glm_frontrange.py"
+    )
+
+    dst = outdir / f"{year}" / f"{doy:03d}.nc"
+    combined.to_netcdf(dst, engine="netcdf4", encoding=encoding)
+    combined.close()
+
+    for f in files:
+        f.unlink()
+    for hour_dir in sorted(day_dir.iterdir()):
+        if hour_dir.is_dir() and not any(hour_dir.iterdir()):
+            hour_dir.rmdir()
+    if day_dir.exists() and not any(day_dir.iterdir()):
+        day_dir.rmdir()
+
+    return dst
+
+
+def _combine_and_report(outdir: Path, day_key: tuple[int, int]) -> None:
+    year, doy = day_key
+    dst = combine_day(outdir, year, doy)
+    if dst is not None:
+        print(f"Combined day {year}/{doy:03d} -> {dst} "
+              f"({dst.stat().st_size / GB:.3f} GB)")
 
 
 # ---------------------------------------------------------------------------
@@ -244,8 +312,15 @@ def main(argv=None) -> int:
     n_empty = 0
     n_skipped_existing = 0
     kept_bytes = 0
+    current_day = None  # (year, doy) of the day currently being processed
 
     for prefix in iter_prefixes(start, end, hours):
+        year_str, doy_str, _hour_str = prefix.split("/")
+        day_key = (int(year_str), int(doy_str))
+        if not args.dry_run and current_day is not None and day_key != current_day:
+            _combine_and_report(outdir, current_day)
+        current_day = day_key
+
         for key, size in list_objects(client, bucket, prefix):
             n_files += 1
 
@@ -263,6 +338,7 @@ def main(argv=None) -> int:
             if total_bytes + size > cap_bytes:
                 print(f"\nReached download cap of {args.max_gb:g} GB "
                       f"({total_bytes / GB:.2f} GB used). Stopping.")
+                _combine_and_report(outdir, current_day)
                 _print_summary(n_files, n_kept, n_empty, n_skipped_existing,
                                total_bytes, kept_bytes)
                 return 0
@@ -303,6 +379,9 @@ def main(argv=None) -> int:
 
         print(f"hour {prefix}: running total {total_bytes / GB:.2f} GB, "
               f"{n_kept} kept, {n_empty} empty")
+
+    if not args.dry_run and current_day is not None:
+        _combine_and_report(outdir, current_day)
 
     _print_summary(n_files, n_kept, n_empty, n_skipped_existing,
                    total_bytes, kept_bytes, dry_run=args.dry_run)
