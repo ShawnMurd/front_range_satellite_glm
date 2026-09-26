@@ -28,7 +28,7 @@ Examples
 # Estimate sizes only (no downloads)
 python download_glm_frontrange.py --start 2024-06-01 --end 2024-06-30 --dry-run
 
-# June 2024, GOES-16, all hours, stop at 50 GB downloaded
+# June 2024, GOES-16, all hours, stop at 100 GB downloaded
 python download_glm_frontrange.py --start 2024-06-01 --end 2024-06-30
 
 # Afternoon/evening convection only (18-23 UTC), GOES-19
@@ -268,7 +268,7 @@ def parse_args(argv=None):
     p.add_argument("--hours", default=None,
                    help="UTC hours to include, e.g. '18-23' or '18,20,22'. Default: all")
     p.add_argument("--outdir", default="glm_front_range", help="Output directory")
-    p.add_argument("--max-gb", type=float, default=50.0,
+    p.add_argument("--max-gb", type=float, default=100.0,
                    help="Stop before cumulative downloads exceed this many GB")
     p.add_argument("--keep-raw", action="store_true",
                    help="Also keep the full (unsubsetted) files under <outdir>/raw")
