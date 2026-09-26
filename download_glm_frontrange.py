@@ -110,6 +110,29 @@ def list_objects(client, bucket: str, prefix: str):
 # ---------------------------------------------------------------------------
 # Subsetting
 # ---------------------------------------------------------------------------
+def _rebase_time_offsets(ds: xr.Dataset) -> None:
+    """Rebase per-flash time-offset variables onto the fixed product_time epoch, in place.
+
+    Each raw granule's ``flash*_time_offset_of_*`` variables are encoded as
+    seconds since *that granule's own* ~20 s start time. Concatenating many
+    granules (e.g. across a whole day) without correcting for this leaves
+    every flash's offset clustered within one scan window instead of
+    spanning the true time range, since only the first granule's "seconds
+    since ..." reference survives the combine. Adding this granule's
+    ``product_time`` (itself seconds since the fixed 2000-01-01 12:00:00
+    epoch) converts the offsets to a common absolute reference that stays
+    correct after concatenation.
+    """
+    epoch_units = ds["product_time"].attrs["units"]
+    product_time = ds["product_time"].values
+    for name, var in ds.variables.items():
+        units = var.attrs.get("units", "")
+        if name == "product_time" or not units.startswith("seconds since") or units == epoch_units:
+            continue
+        var.values = var.values + product_time
+        var.attrs["units"] = epoch_units
+
+
 def subset_to_bbox(src_path: str, dst_path: Path, bbox: dict) -> bool:
     """Subset one GLM LCFA file to flash-level data over the bounding box.
 
@@ -143,6 +166,7 @@ def subset_to_bbox(src_path: str, dst_path: Path, bbox: dict) -> bool:
             return False
 
         sub = ds.isel(number_of_flashes=f_idx)
+        _rebase_time_offsets(sub)
 
         # Avoid the classic "_FillValue present in both attrs and encoding"
         # netCDF write conflict.
